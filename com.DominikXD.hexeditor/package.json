@@ -1,0 +1,11 @@
+{
+  "name": "com.DominikXD.hexeditor",
+  "version": "1.0.0",
+  "displayName": "Hex Editor",
+  "description": "Tool for editing and creating hexgrid maps.",
+  "unity": "2020.3",
+  "author": {
+    "name": "Dominik Kolouch",
+    "email": "dominikkolouch@seznam.cz",
+  }
+}
