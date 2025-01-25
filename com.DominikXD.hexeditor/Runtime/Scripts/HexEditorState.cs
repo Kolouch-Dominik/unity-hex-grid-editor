@@ -7,27 +7,32 @@ public enum EditorMode
     AddRemove,
     HeightMap
 }
-namespace Editor
+namespace Editor.Runtime
 {
 
-[Serializable]
-public class HexEditorState
-{
-    // reference to gridmap (guid) 
-    public string gridMapGuid;
+    [Serializable]
+    public class HexEditorState
+    {
+        // For referencing GridMap (asset or scene object)
+        public string gridMapGuid;       // If it's an asset
+        public string gridMapSceneName;  // If it's a scene object
+        public bool isGridMapSceneObject;
 
-    public float hexSize;
-    public int gridRange;
+        // GridMap settings
+        public float hexSize;
+        public int gridRange;
 
-    public List<string> prefabGuids = new List<string>();
+        // The tile palette: we store (prefabGUID, layer, name)
+        public List<HexTileSetting> tileSettings = new List<HexTileSetting>();
 
-    public int selectedTileIndex;
-    public float ghostRotationDeg;
-    public string currentMode; // "AddRemove" or "HeightMap"
-    public float heightStep;
-    public int brushSize;
+        // Editor window state
+        public int selectedTileIndex;
+        public float ghostRotationDeg;
+        public string currentMode; // "AddRemove" or "HeightMap"
+        public float heightStep;
+        public int brushSize;
 
-    public List<PlacedHexData> placedHexes = new List<PlacedHexData>();
-
-}
+        // All placed hexes in the scene
+        public List<PlacedHexData> placedHexes = new List<PlacedHexData>();
+    }
 }

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
 using UnityEditor;
+using Editor.Runtime;
 
 namespace Editor
 {
@@ -12,19 +13,24 @@ namespace Editor
 
         private EditorMode currentMode = EditorMode.AddRemove;
 
+        // Reference to our scene's GridMap
         private GridMap gridMap;
-        private List<GameObject> tilePrefabs = new List<GameObject>();
+        private bool loadedOnce = false;
+
+        // The new "tile palette" with layer info
+        private List<HexTileSetting> tileSettings = new List<HexTileSetting>();
         private int selectedTileIndex = 0;
 
+        // Ghost object for previewing tile
         private GameObject ghostObject;
         private float ghostRotationDeg = 0f;
+
+        // Brush parameters
+        private float heightStep = 0.2f; // how much to raise/lower
+        private int brushSize = 0;     // 0 = single hex, 1=neighbors, etc.
+
+        // Scrolling in the palette
         private Vector2 scrollPos;
-
-        private float heightStep = 0.2f;   // value for increasing/decreasing height of hex
-        private int brushSize = 0;        // 0 = one hex, 1 = + neighbours, etc.
-
-        // helping
-        private bool loadedOnce = false;
 
         [MenuItem("Window/Hex3D Editor (Advanced)")]
         public static void ShowWindow()
@@ -34,10 +40,8 @@ namespace Editor
 
         private void OnEnable()
         {
-            // callback for drawing
             SceneView.duringSceneGui += OnSceneGUI;
 
-            // first attempt to load 
             if (!loadedOnce)
             {
                 loadedOnce = true;
@@ -47,11 +51,10 @@ namespace Editor
 
         private void OnDisable()
         {
-        
             SceneView.duringSceneGui -= OnSceneGUI;
             DestroyGhost();
 
-            // save state to json
+            // Save on disable
             SaveEditorState();
         }
 
@@ -59,16 +62,15 @@ namespace Editor
         {
             GUILayout.Label("3D Hex Editor", EditorStyles.boldLabel);
 
-            // gridmap
+            // Pick the GridMap
             var newGridMap = (GridMap)EditorGUILayout.ObjectField("GridMap", gridMap, typeof(GridMap), true);
             if (newGridMap != gridMap)
             {
                 gridMap = newGridMap;
-                // update GUID 
                 SaveEditorState();
             }
 
-            // if grid map is not null we can change params
+            // GridMap params
             if (gridMap != null)
             {
                 EditorGUI.BeginChangeCheck();
@@ -84,7 +86,7 @@ namespace Editor
 
             EditorGUILayout.Space();
 
-            // two button modes
+            // Two modes
             EditorGUILayout.BeginHorizontal();
             if (GUILayout.Toggle(currentMode == EditorMode.AddRemove, "Add/Remove", "Button"))
             {
@@ -106,32 +108,42 @@ namespace Editor
 
             EditorGUILayout.Space();
 
-            // Parameters Height / Brush
+            // Brush controls
             heightStep = EditorGUILayout.FloatField("Height Step", heightStep);
             brushSize = EditorGUILayout.IntSlider("Brush Size", brushSize, 0, 3);
 
-            // Palette
-            int oldSize = tilePrefabs.Count;
-            int newSize = EditorGUILayout.IntField("Tile Prefabs Count", oldSize);
-            if (newSize != oldSize)
+            EditorGUILayout.Space();
+
+            // The tileSettings array
+            int oldCount = tileSettings.Count;
+            int newCount = EditorGUILayout.IntField("Number of Tiles in Palette", oldCount);
+            if (newCount != oldCount)
             {
-                // change list 
-                while (tilePrefabs.Count < newSize) tilePrefabs.Add(null);
-                while (tilePrefabs.Count > newSize) tilePrefabs.RemoveAt(tilePrefabs.Count - 1);
+                while (tileSettings.Count < newCount) tileSettings.Add(new HexTileSetting());
+                while (tileSettings.Count > newCount) tileSettings.RemoveAt(tileSettings.Count - 1);
             }
 
-            // drawing tilePrefabs
-            for (int i = 0; i < tilePrefabs.Count; i++)
+            // Draw each tile setting
+            for (int i = 0; i < tileSettings.Count; i++)
             {
-                tilePrefabs[i] = (GameObject)EditorGUILayout.ObjectField($"Tile {i}", tilePrefabs[i], typeof(GameObject), false);
+                EditorGUILayout.BeginVertical("box");
+                EditorGUILayout.LabelField($"Tile {i}", EditorStyles.boldLabel);
+                tileSettings[i].tileName = EditorGUILayout.TextField("Name", tileSettings[i].tileName);
+                tileSettings[i].prefab = (GameObject)EditorGUILayout.ObjectField("Prefab",
+                    tileSettings[i].prefab, typeof(GameObject), false);
+                tileSettings[i].layer = EditorGUILayout.IntField("Layer",
+                    tileSettings[i].layer);
+
+                EditorGUILayout.EndVertical();
             }
 
             EditorGUILayout.Space();
-            EditorGUILayout.LabelField("Palette", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField("Tile Palette (Click to select)", EditorStyles.boldLabel);
             DrawTilePalette();
 
             EditorGUILayout.Space();
-            // buttons for save/load/clear hexes
+
+            // Save/Load/clear
             EditorGUILayout.BeginHorizontal();
             if (GUILayout.Button("Save Editor State"))
             {
@@ -143,7 +155,8 @@ namespace Editor
             }
             if (gridMap != null && GUILayout.Button("Clear All Hexes"))
             {
-                if (EditorUtility.DisplayDialog("Clear All", "Are you sure you want to remove all placed hexes?", "Yes", "No"))
+                if (EditorUtility.DisplayDialog("Clear All",
+                    "Are you sure you want to remove all placed hexes?", "Yes", "No"))
                 {
                     gridMap.ClearAllHexes();
                 }
@@ -158,9 +171,9 @@ namespace Editor
 
         private void DrawTilePalette()
         {
-            if (tilePrefabs == null || tilePrefabs.Count == 0)
+            if (tileSettings == null || tileSettings.Count == 0)
             {
-                EditorGUILayout.HelpBox("No tilePrefabs defined.", MessageType.Info);
+                EditorGUILayout.HelpBox("No tile settings defined.", MessageType.Info);
                 return;
             }
 
@@ -168,13 +181,13 @@ namespace Editor
             int buttonSize = 64;
 
             scrollPos = EditorGUILayout.BeginScrollView(scrollPos, GUILayout.Height(200));
-            for (int i = 0; i < tilePrefabs.Count; i += columns)
+            for (int i = 0; i < tileSettings.Count; i += columns)
             {
                 EditorGUILayout.BeginHorizontal();
                 for (int c = 0; c < columns; c++)
                 {
                     int index = i + c;
-                    if (index >= tilePrefabs.Count) break;
+                    if (index >= tileSettings.Count) break;
                     DrawTileButton(index, buttonSize);
                 }
                 EditorGUILayout.EndHorizontal();
@@ -184,25 +197,26 @@ namespace Editor
 
         private void DrawTileButton(int index, int size)
         {
-            GameObject prefab = tilePrefabs[index];
+            var setting = tileSettings[index];
+            GameObject prefab = setting.prefab;
             Texture2D preview = null;
             if (prefab != null)
             {
-                preview = AssetPreview.GetAssetPreview(prefab)
-                       ?? AssetPreview.GetMiniThumbnail(prefab);
+                preview = AssetPreview.GetAssetPreview(prefab) ?? AssetPreview.GetMiniThumbnail(prefab);
             }
 
+            // Highlight if selected
             GUIStyle style = new GUIStyle(GUI.skin.button);
             if (selectedTileIndex == index)
             {
-                // highlight
                 Color highlight = new Color(1f, 1f, 0.5f, 0.4f);
                 style.normal.background = MakeTex(size, size, highlight);
             }
 
+            // Button label
             GUIContent content = preview
-                ? new GUIContent(preview)
-                : new GUIContent($"Tile {index}");
+                ? new GUIContent(preview, $"Layer={setting.layer}")
+                : new GUIContent($"{setting.tileName}\n(Layer={setting.layer})");
 
             if (GUILayout.Button(content, style, GUILayout.Width(size), GUILayout.Height(size)))
             {
@@ -226,9 +240,9 @@ namespace Editor
             return result;
         }
 
-        // ------------------------------------------------
-        // OnSceneGUI
-        // ------------------------------------------------
+        //------------------------------------------------------------------------------
+        // Scene GUI
+        //------------------------------------------------------------------------------
         private void OnSceneGUI(SceneView sceneView)
         {
             if (gridMap == null)
@@ -236,16 +250,18 @@ namespace Editor
                 DestroyGhost();
                 return;
             }
-            if (tilePrefabs == null || tilePrefabs.Count == 0)
+
+            if (tileSettings == null || tileSettings.Count == 0)
             {
                 DestroyGhost();
                 return;
             }
 
+            // Editor events
             Event e = Event.current;
             Ray ray = HandleUtility.GUIPointToWorldRay(e.mousePosition);
 
-            // mouse wheel rotations 
+            // Rotate ghost via scrollWheel or R
             if (currentMode == EditorMode.AddRemove && e.type == EventType.ScrollWheel)
             {
                 float stepDeg = 60f;
@@ -256,8 +272,6 @@ namespace Editor
                 UpdateGhostTransform();
                 e.Use();
             }
-
-            // rotation on r
             if (currentMode == EditorMode.AddRemove && e.type == EventType.KeyDown && e.keyCode == KeyCode.R)
             {
                 ghostRotationDeg += 60f;
@@ -266,7 +280,7 @@ namespace Editor
                 e.Use();
             }
 
-            // raycasting on floor
+            // Raycast
             if (Physics.Raycast(ray, out RaycastHit hit, 100000f))
             {
                 Vector3 hitPoint = hit.point;
@@ -274,17 +288,16 @@ namespace Editor
 
                 if (currentMode == EditorMode.AddRemove)
                 {
-                    // show preview hex
+                    // Show ghost
                     Vector3 snappedPos = gridMap.AxialToWorld(qr.x, qr.y);
                     UpdateGhost(snappedPos);
 
-                    // mouse click adding/deleting hex
+                    // Left = place, Right = remove
                     if (e.type == EventType.MouseDown && (e.button == 0 || e.button == 1))
                     {
                         e.Use();
                         if (e.button == 0)
                         {
-                            // left mousebutton add
                             PlaceHexWithBrush(qr);
                         }
                         else
@@ -295,52 +308,52 @@ namespace Editor
                 }
                 else if (currentMode == EditorMode.HeightMap)
                 {
-                    // disable preview if not needed
                     if (ghostObject) ghostObject.SetActive(false);
 
-                    // increasing/decreasing height
                     if (e.type == EventType.MouseDown && (e.button == 0 || e.button == 1))
                     {
                         e.Use();
-                        RaiseLowerHexWithBrush(qr, e.button == 0 ? +heightStep : -heightStep);
+                        float delta = (e.button == 0) ? +heightStep : -heightStep;
+                        RaiseLowerHexWithBrush(qr, delta);
                     }
                 }
             }
             else
             {
-                // if ray dont hit, we hide preview (ghost)
                 if (ghostObject && currentMode == EditorMode.AddRemove)
+                {
                     ghostObject.SetActive(false);
+                }
             }
         }
 
-        // ------------------------------------------------
-        // Brush operations
-        // ------------------------------------------------
-
-        /// <summary>
-        /// add (placehex) on coord qr and adding neighbours (brushsize)
-        /// </summary>
+        //------------------------------------------------------------------------------
+        // Brush Operations
+        //------------------------------------------------------------------------------
         private void PlaceHexWithBrush(Vector2Int centerQR)
         {
-            int idx = Mathf.Clamp(selectedTileIndex, 0, tilePrefabs.Count - 1);
-            GameObject prefab = tilePrefabs[idx];
-            if (prefab == null) return;
+            if (selectedTileIndex < 0 || selectedTileIndex >= tileSettings.Count) return;
+            HexTileSetting setting = tileSettings[selectedTileIndex];
+            if (setting.prefab == null) return;
 
-            string prefabGuid = GetAssetGUID(prefab);
+            // The prefab GUID
+            string prefabGuid = GetAssetGUID(setting.prefab);
 
+            // The tile's assigned layer
+            int newLayer = setting.layer;
+
+            // The tile's rotation
+            Quaternion rot = Quaternion.Euler(0, ghostRotationDeg, 0);
+
+            // Get brush coords
             List<Vector2Int> coords = GetHexesInRange(centerQR, brushSize);
             foreach (var qr in coords)
             {
-                if (gridMap == null) break; // for sure
-                Quaternion rot = Quaternion.Euler(0, ghostRotationDeg, 0);
-                gridMap.PlaceHex(qr, prefab, rot, prefabGuid);
+                if (gridMap == null) break;
+                gridMap.PlaceHex(qr, setting.prefab, newLayer, rot, prefabGuid);
             }
         }
 
-        /// <summary>
-        /// delete hex on coord qr and neighbours
-        /// </summary>
         private void RemoveHexWithBrush(Vector2Int centerQR)
         {
             List<Vector2Int> coords = GetHexesInRange(centerQR, brushSize);
@@ -351,29 +364,15 @@ namespace Editor
             }
         }
 
-        /// <summary>
-        /// Increase / Decrease hex and neighbours around centerQR
-        /// </summary>
         private void RaiseLowerHexWithBrush(Vector2Int centerQR, float deltaY)
         {
             List<Vector2Int> coords = GetHexesInRange(centerQR, brushSize);
             foreach (var qr in coords)
             {
-                if (gridMap.TryGetPlacedHex(qr, out GameObject hexGO))
-                {
-                    Undo.RecordObject(hexGO.transform, "Raise/Lower Hex");
-                    Vector3 pos = hexGO.transform.position;
-                    pos.y += deltaY;
-                    hexGO.transform.position = pos;
-                }
+                gridMap.RaiseLowerAllTiles(qr, deltaY);
             }
         }
 
-        /// <summary>
-        /// Returns all hex coordinates within "range" of the centers.
-        /// range=0 -> just center, range=1 -> center + surrounding 6, etc.
-        /// (Simple hex distance.)
-        /// </summary>
         private List<Vector2Int> GetHexesInRange(Vector2Int center, int range)
         {
             var results = new List<Vector2Int>();
@@ -394,23 +393,24 @@ namespace Editor
             return results;
         }
 
-        // ------------------------------------------------
-        // preview (ghos) functions
-        // ------------------------------------------------
-
+        //------------------------------------------------------------------------------
+        // Ghost
+        //------------------------------------------------------------------------------
         private void CreateOrReplaceGhost()
         {
             DestroyGhost();
-            int idx = Mathf.Clamp(selectedTileIndex, 0, tilePrefabs.Count - 1);
-            if (tilePrefabs[idx] == null) return;
 
-            ghostObject = Instantiate(tilePrefabs[idx]);
-            ghostObject.name = "GhostHex";
+            if (selectedTileIndex < 0 || selectedTileIndex >= tileSettings.Count) return;
+            var setting = tileSettings[selectedTileIndex];
+            if (setting.prefab == null) return;
+
+            ghostObject = Instantiate(setting.prefab);
+            ghostObject.name = "GhostHexPreview";
             ghostObject.hideFlags = HideFlags.DontSave | HideFlags.NotEditable;
 
             MakeGhostMaterial(ghostObject);
 
-            // turn off collisions
+            // Disable collisions
             foreach (var c in ghostObject.GetComponentsInChildren<Collider>())
                 c.enabled = false;
         }
@@ -461,59 +461,64 @@ namespace Editor
             }
         }
 
-        // ------------------------------------------------
-        // saving / loading from json
-        // ------------------------------------------------
-
-        /// <summary>
-        /// Save state to json (DATA_FILE_PATH).
-        /// </summary>
+        //------------------------------------------------------------------------------
+        // Saving/Loading
+        //------------------------------------------------------------------------------
         private void SaveEditorState()
         {
             try
             {
-                // Creating State
                 HexEditorState state = new HexEditorState();
 
-                // Save reference of gridmap
-                state.gridMapGuid = GetAssetGUID(gridMap);
+                // GridMap reference
+                bool isSceneObject;
+                string sceneObjectName;
+                string guid = GetAssetOrSceneRef(gridMap, out isSceneObject, out sceneObjectName);
+                state.gridMapGuid = guid;
+                state.gridMapSceneName = sceneObjectName;
+                state.isGridMapSceneObject = isSceneObject;
 
-                // save settings of gridmap
+                // If we have a gridmap, store its settings + placed hexes
                 if (gridMap != null)
                 {
                     state.hexSize = gridMap.hexSize;
                     state.gridRange = gridMap.gridRange;
-
-                    // save placedHexes
                     state.placedHexes = gridMap.GetPlacedHexesData();
                 }
 
-                // Palette
-                state.prefabGuids.Clear();
-                foreach (var prefab in tilePrefabs)
+                // Save tile palette
+                state.tileSettings.Clear();
+                foreach (var tset in tileSettings)
                 {
-                    string guid = GetAssetGUID(prefab);
-                    state.prefabGuids.Add(guid);
+                    // Fill the prefabGUID
+                    bool dummySceneObj;
+                    string dummyName;
+                    string pGuid = GetAssetOrSceneRef(tset.prefab, out dummySceneObj, out dummyName);
+
+                    // Make a copy
+                    HexTileSetting copy = new HexTileSetting()
+                    {
+                        tileName = tset.tileName,
+                        prefab = tset.prefab,
+                        layer = tset.layer,
+                        prefabGUID = pGuid
+                    };
+                    state.tileSettings.Add(copy);
                 }
 
+                // Editor fields
                 state.selectedTileIndex = selectedTileIndex;
                 state.ghostRotationDeg = ghostRotationDeg;
                 state.currentMode = currentMode.ToString();
                 state.heightStep = heightStep;
                 state.brushSize = brushSize;
 
-                // Serialize to Json
+                // Serialize
                 string json = JsonUtility.ToJson(state, true);
-
-                // Save on disk
                 string dir = Path.GetDirectoryName(DATA_FILE_PATH);
-                if (!Directory.Exists(dir))
-                {
-                    Directory.CreateDirectory(dir);
-                }
+                if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
                 File.WriteAllText(DATA_FILE_PATH, json);
 
-            
                 Debug.Log($"Editor state saved to {DATA_FILE_PATH}");
             }
             catch (Exception ex)
@@ -522,9 +527,6 @@ namespace Editor
             }
         }
 
-        /// <summary>
-        /// Load state from Json and update Editor and Gridmap
-        /// </summary>
         private void LoadEditorState()
         {
             if (!File.Exists(DATA_FILE_PATH))
@@ -538,28 +540,52 @@ namespace Editor
                 HexEditorState state = JsonUtility.FromJson<HexEditorState>(json);
                 if (state == null) return;
 
-                // Find gripmap (guid)
-                GridMap loadedGrid = LoadAssetFromGUID<GridMap>(state.gridMapGuid);
-                gridMap = loadedGrid;
+                // Re-find the gridMap
+                GridMap loadedGrid = null;
+                if (!state.isGridMapSceneObject)
+                {
+                    // It's an asset
+                    loadedGrid = LoadAssetFromGUID<GridMap>(state.gridMapGuid);
+                }
+                else
+                {
+                    // It's a scene object
+                    if (!string.IsNullOrEmpty(state.gridMapSceneName))
+                    {
+                        GameObject go = GameObject.Find(state.gridMapSceneName);
+                        if (go != null)
+                        {
+                            loadedGrid = go.GetComponent<GridMap>();
+                        }
+                    }
+                }
 
+                gridMap = loadedGrid;
                 if (gridMap != null)
                 {
                     Undo.RecordObject(gridMap, "Load GridMap Settings");
                     gridMap.hexSize = state.hexSize;
                     gridMap.gridRange = state.gridRange;
-
-                    // reload placehexes
                     gridMap.LoadPlacedHexesData(state.placedHexes);
                 }
 
-                // Palette
-                tilePrefabs.Clear();
-                foreach (var guid in state.prefabGuids)
+                // Load tile palette
+                tileSettings.Clear();
+                foreach (var tset in state.tileSettings)
                 {
-                    GameObject prefab = LoadAssetFromGUID<GameObject>(guid);
-                    tilePrefabs.Add(prefab);
+                    // Rebuild the tile in memory
+                    GameObject prefab = LoadAssetFromGUID<GameObject>(tset.prefabGUID);
+                    HexTileSetting copy = new HexTileSetting()
+                    {
+                        tileName = tset.tileName,
+                        prefab = prefab,
+                        layer = tset.layer,
+                        prefabGUID = tset.prefabGUID
+                    };
+                    tileSettings.Add(copy);
                 }
 
+                // Editor fields
                 selectedTileIndex = state.selectedTileIndex;
                 ghostRotationDeg = state.ghostRotationDeg;
                 heightStep = state.heightStep;
@@ -570,6 +596,7 @@ namespace Editor
                 else
                     currentMode = EditorMode.AddRemove;
 
+                // Create or destroy ghost
                 if (currentMode == EditorMode.AddRemove)
                 {
                     CreateOrReplaceGhost();
@@ -578,11 +605,39 @@ namespace Editor
                 {
                     DestroyGhost();
                 }
+
                 Debug.Log($"Editor state loaded from {DATA_FILE_PATH}");
             }
             catch (Exception ex)
             {
                 Debug.LogError("Error loading editor state: " + ex);
+            }
+        }
+
+        //------------------------------------------------------------------------------
+        // Helper
+        //------------------------------------------------------------------------------
+        private string GetAssetOrSceneRef(UnityEngine.Object obj,
+                                          out bool isSceneObject,
+                                          out string sceneObjectName)
+        {
+            isSceneObject = false;
+            sceneObjectName = "";
+
+            if (obj == null) return "";
+
+            string path = AssetDatabase.GetAssetPath(obj);
+            if (string.IsNullOrEmpty(path))
+            {
+                // Scene object
+                isSceneObject = true;
+                sceneObjectName = obj.name;
+                return "";
+            }
+            else
+            {
+                // It's an asset
+                return AssetDatabase.AssetPathToGUID(path);
             }
         }
 
@@ -599,8 +654,7 @@ namespace Editor
             if (string.IsNullOrEmpty(guid)) return null;
             string path = AssetDatabase.GUIDToAssetPath(guid);
             if (string.IsNullOrEmpty(path)) return null;
-            T asset = AssetDatabase.LoadAssetAtPath<T>(path);
-            return asset;
+            return AssetDatabase.LoadAssetAtPath<T>(path);
         }
     }
 }
