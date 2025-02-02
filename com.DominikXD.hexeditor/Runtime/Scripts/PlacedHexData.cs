@@ -1,6 +1,11 @@
 ﻿using System;
+
 namespace Editor.Runtime
 {
+    /// <summary>
+    /// Serializable class for storing data about a placed hex tile.
+    /// Used for saving and loading.
+    /// </summary>
     [Serializable]
     public class PlacedHexData
     {
@@ -11,6 +16,6 @@ namespace Editor.Runtime
         public float posX;
         public float posY;
         public float posZ;
-        public int layer; // NEW: which layer this tile belongs to
+        public int layer;
     }
 }

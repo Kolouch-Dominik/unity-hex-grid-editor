@@ -1,35 +1,35 @@
-﻿using Editor.Runtime;
-using System.Collections.Generic;
-using UnityEditor;
+﻿using System.Collections.Generic;
 using UnityEngine;
+using UnityEditor;
+using Editor.Runtime;
 
-namespace Editor
+namespace HexEditor
 {
-    [ExecuteInEditMode]
-    [RequireComponent(typeof(BoxCollider))]
-    public class GridMap : MonoBehaviour
+    public class HexGridManager : MonoBehaviour
     {
-        [Header("Hex Settings")]
+        [Header("Hex Grid Settings")]
         public float hexSize = 1.0f;
         public int gridRange = 10;
 
-        // Storing multiple tiles at each cell
-        private Dictionary<Vector2Int, List<PlacedHexInfo>> placedHexes
-            = new Dictionary<Vector2Int, List<PlacedHexInfo>>();
+        // Ukládáme více hexů (v různých vrstvách) na jedné buňce
+        private Dictionary<Vector2Int, List<PlacedHexInfo>> placedHexes = new Dictionary<Vector2Int, List<PlacedHexInfo>>();
 
         private void OnEnable()
         {
-            var collider = GetComponent<BoxCollider>();
-            collider.size = new Vector3(100000, 0, 100000);
+            // Zajistíme obrovský BoxCollider pro snadné raycastování ve scéně.
+            BoxCollider collider = GetComponent<BoxCollider>();
+            if (collider != null)
+            {
+                collider.size = new Vector3(100000, 0, 100000);
+            }
         }
 
         /// <summary>
-        /// Place a tile at (q,r) with a given layer. 
-        /// - If the same layer already exists, skip (or you could replace).
-        /// - Otherwise, we stack on top of all tiles with layer < newLayer.
+        /// Umístí hex na buňku (q,r) do zadané vrstvy.
+        /// Pokud je již hex ve stejné vrstvě, umístění se přeskočí.
+        /// Nový hex se umístí tak, aby jeho spodní hrana seděla přesně na horní hraně hexu s nižší vrstvou.
         /// </summary>
-        public void PlaceHex(Vector2Int qr, GameObject prefab, int newLayer,
-                             Quaternion rotation, string prefabGuid)
+        public void PlaceHex(Vector2Int qr, GameObject prefab, int newLayer, Quaternion rotation, string prefabGuid)
         {
             if (prefab == null) return;
 
@@ -39,41 +39,30 @@ namespace Editor
                 placedHexes[qr] = stackedList;
             }
 
-            // 1) Check if there's already a tile with the same layer
-            bool sameLayerFound = false;
+            // Pokud už existuje hex ve stejné vrstvě, přeskočíme umístění.
+            foreach (var existing in stackedList)
+            {
+                if (existing.instance != null && existing.layer == newLayer)
+                {
+                    Debug.Log($"Bunka {qr} již obsahuje hex ve vrstvě {newLayer}.");
+                    return;
+                }
+            }
+
+            // Vypočítáme maximální horní Y souřadnici mezi hexy s nižší vrstvou.
             float baseY = 0f;
-            foreach (var existingInfo in stackedList)
+            foreach (var existing in stackedList)
             {
-                if (existingInfo.instance == null) continue;
-
-                // If we already have exactly the same layer, skip
-                if (existingInfo.layer == newLayer)
+                if (existing.instance == null) continue;
+                if (existing.layer < newLayer)
                 {
-                    sameLayerFound = true;
-                }
-
-                // We only stack on top if existing layer < newLayer
-                if (existingInfo.layer < newLayer)
-                {
-                    float topY = existingInfo.instance.transform.position.y;
-                    if (topY > baseY) baseY = topY;
+                    float topY = GetTileTopY(existing.instance);
+                    baseY = Mathf.Max(baseY, topY);
                 }
             }
 
-            if (sameLayerFound)
-            {
-                Debug.Log($"[GridMap] Cell {qr} already has a tile in layer {newLayer}, skipping placement.");
-                return;
-            }
-
-            // 2) Decide how high above that base we want to place
-            // If you want an absolute ground at y=0 for layer=0, you can do:
-            // if (newLayer == 0) baseY = 0f; // ensure floor always at 0
-            // but that's optional. For now, let's just do an offset:
-            float layerOffset = 0.5f; // how high each new layer is stacked
-            float finalY = baseY + layerOffset;
-
-            // 3) Create the object
+            // Nový hex bude umístěn tak, že jeho spodní hrana (pivot) bude na hodnotě baseY.
+            float finalY = baseY;
             Vector3 pos = AxialToWorld(qr.x, qr.y);
             pos.y = finalY;
 
@@ -81,30 +70,40 @@ namespace Editor
             hexGO.transform.position = pos;
             hexGO.transform.rotation = rotation;
             hexGO.name = $"{prefab.name}_Layer{newLayer}_{qr.x}_{qr.y}";
-
             Undo.RegisterCreatedObjectUndo(hexGO, "Place Hex");
 
-            // Ensure a collider
+            // Přidáme collider, pokud jej prefab nemá.
             if (hexGO.GetComponent<Collider>() == null)
             {
                 MeshCollider col = hexGO.AddComponent<MeshCollider>();
                 col.convex = false;
             }
 
-            var info = new PlacedHexInfo()
+            // Uložíme informace o umístěném hexu.
+            PlacedHexInfo info = new PlacedHexInfo()
             {
                 prefabGUID = prefabGuid,
                 instance = hexGO,
                 rotationY = rotation.eulerAngles.y,
                 layer = newLayer
             };
+
             stackedList.Add(info);
         }
 
         /// <summary>
-        /// Remove ALL tiles at (q,r).
-        /// If you only want to remove the tile in the same layer, you'd filter here.
+        /// Zjistí horní hranu hexu (pokud je dostupný renderer).
         /// </summary>
+        private float GetTileTopY(GameObject tile)
+        {
+            Renderer renderer = tile.GetComponentInChildren<Renderer>();
+            if (renderer != null)
+            {
+                return renderer.bounds.max.y;
+            }
+            return tile.transform.position.y;
+        }
+
         public void RemoveHex(Vector2Int qr)
         {
             if (placedHexes.TryGetValue(qr, out var infoList))
@@ -120,15 +119,11 @@ namespace Editor
             }
         }
 
-        /// <summary>
-        /// Clears everything
-        /// </summary>
         public void ClearAllHexes()
         {
             foreach (var kvp in placedHexes)
             {
-                var infoList = kvp.Value;
-                foreach (var info in infoList)
+                foreach (var info in kvp.Value)
                 {
                     if (info.instance != null)
                     {
@@ -139,45 +134,35 @@ namespace Editor
             placedHexes.Clear();
         }
 
-        /// <summary>
-        /// Raise/lower ALL stacked tiles at (q,r).
-        /// </summary>
         public void RaiseLowerAllTiles(Vector2Int qr, float deltaY)
         {
             if (placedHexes.TryGetValue(qr, out var infoList))
             {
                 foreach (var info in infoList)
                 {
-                    if (info.instance)
+                    if (info.instance != null)
                     {
-                        Undo.RecordObject(info.instance.transform, "Raise/Lower Hex (Stacked)");
-                        Vector3 pos = info.instance.transform.position;
-                        pos.y += deltaY;
-                        info.instance.transform.position = pos;
+                        Undo.RecordObject(info.instance.transform, "Raise/Lower Hex");
+                        info.instance.transform.position += new Vector3(0, deltaY, 0);
                     }
                 }
             }
         }
 
-        // -------------------------------------------------------------------
-        // Save/Load multiple tiles
-        // -------------------------------------------------------------------
+        // Metody pro serializaci a převod mezi axiómickými a světem
         public List<PlacedHexData> GetPlacedHexesData()
         {
             var list = new List<PlacedHexData>();
             foreach (var kvp in placedHexes)
             {
                 Vector2Int qr = kvp.Key;
-                var infoList = kvp.Value;
-
-                foreach (var info in infoList)
+                foreach (var info in kvp.Value)
                 {
                     if (info.instance != null)
                     {
                         Vector3 pos = info.instance.transform.position;
                         float yrot = info.instance.transform.eulerAngles.y;
-
-                        var data = new PlacedHexData()
+                        list.Add(new PlacedHexData
                         {
                             q = qr.x,
                             r = qr.y,
@@ -187,8 +172,7 @@ namespace Editor
                             posY = pos.y,
                             posZ = pos.z,
                             layer = info.layer
-                        };
-                        list.Add(data);
+                        });
                     }
                 }
             }
@@ -198,55 +182,45 @@ namespace Editor
         public void LoadPlacedHexesData(List<PlacedHexData> loadedList)
         {
             ClearAllHexes();
-
             foreach (var data in loadedList)
             {
                 string path = AssetDatabase.GUIDToAssetPath(data.prefabGuid);
                 GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(path);
                 if (prefab == null) continue;
-
                 Quaternion rot = Quaternion.Euler(0, data.rotationY, 0);
-
                 GameObject hexGO = (GameObject)PrefabUtility.InstantiatePrefab(prefab, this.transform);
                 hexGO.transform.position = new Vector3(data.posX, data.posY, data.posZ);
                 hexGO.transform.rotation = rot;
                 hexGO.name = $"Hex_{data.q}_{data.r}_L{data.layer}";
-
                 Undo.RegisterCreatedObjectUndo(hexGO, "Load Hex");
 
-                var coord = new Vector2Int(data.q, data.r);
+                Vector2Int coord = new Vector2Int(data.q, data.r);
                 if (!placedHexes.TryGetValue(coord, out var infoList))
                 {
                     infoList = new List<PlacedHexInfo>();
                     placedHexes[coord] = infoList;
                 }
-
-                var info = new PlacedHexInfo()
+                infoList.Add(new PlacedHexInfo
                 {
                     prefabGUID = data.prefabGuid,
                     instance = hexGO,
                     rotationY = data.rotationY,
                     layer = data.layer
-                };
-                infoList.Add(info);
+                });
             }
         }
 
-        // ------------------------------------------------
-        // Axial <-> World
-        // ------------------------------------------------
         public Vector3 AxialToWorld(int q, int r)
         {
             float x = Mathf.Sqrt(3f) * (q + r / 2f) * hexSize;
             float z = 1.5f * r * hexSize;
-            return new Vector3(x, 0f, z);
+            return new Vector3(x, 0, z);
         }
 
         public Vector2Int WorldToAxial(Vector3 pos)
         {
             float adjustedX = pos.x / hexSize;
             float adjustedZ = pos.z / hexSize;
-
             float qf = (Mathf.Sqrt(3f) / 3f * adjustedX) - (adjustedZ / 3f);
             float rf = (2f / 3f * adjustedZ);
             return AxialRound(qf, rf);
@@ -255,36 +229,32 @@ namespace Editor
         private Vector2Int AxialRound(float q, float r)
         {
             float s = -q - r;
-            int rx = Mathf.RoundToInt(q);
-            int ry = Mathf.RoundToInt(r);
-            int rz = Mathf.RoundToInt(s);
+            int rq = Mathf.RoundToInt(q);
+            int rr = Mathf.RoundToInt(r);
+            int rs = Mathf.RoundToInt(s);
 
-            if (rx + ry + rz != 0)
+            if (rq + rr + rs != 0)
             {
-                float dq = Mathf.Abs(rx - q);
-                float dr = Mathf.Abs(ry - r);
-                float ds = Mathf.Abs(rz - s);
+                float dq = Mathf.Abs(rq - q);
+                float dr = Mathf.Abs(rr - r);
+                float ds = Mathf.Abs(rs - s);
 
-                if (dq > dr && dq > ds) rx = -ry - rz;
-                else if (dr > ds) ry = -rx - rz;
-                else rz = -rx - ry;
+                if (dq > dr && dq > ds) rq = -rr - rs;
+                else if (dr > ds) rr = -rq - rs;
+                else rs = -rq - rr;
             }
-            return new Vector2Int(rx, ry);
+            return new Vector2Int(rq, rr);
         }
 
-        // ------------------------------------------------
-        // Draw "Hex wireframe" in Scene
-        // ------------------------------------------------
         private void OnDrawGizmos()
         {
+            // Vykreslíme mřížku hexagonů na základě středu kamery.
             SceneView sceneView = SceneView.currentDrawingSceneView;
             if (sceneView == null) return;
-
             Camera cam = sceneView.camera;
             if (cam == null) return;
-
-            Vector3 cameraCenter = GetCameraCenterOnGrid(cam);
-            Vector2Int centerQR = WorldToAxial(cameraCenter);
+            Vector3 camCenter = GetCameraCenterOnGrid(cam);
+            Vector2Int centerQR = WorldToAxial(camCenter);
 
             for (int dq = -gridRange; dq <= gridRange; dq++)
             {
@@ -295,10 +265,9 @@ namespace Editor
                     {
                         int q = centerQR.x + dq;
                         int r = centerQR.y + dr;
-                        Vector3 cpos = AxialToWorld(q, r);
-
+                        Vector3 pos = AxialToWorld(q, r);
                         Gizmos.color = Color.white;
-                        DrawHexWire(cpos, hexSize);
+                        DrawHexWire(pos, hexSize);
                     }
                 }
             }
@@ -306,8 +275,8 @@ namespace Editor
 
         private int HexDistance(int q1, int r1, int q2, int r2)
         {
-            int x1 = q1; int z1 = r1; int y1 = -x1 - z1;
-            int x2 = q2; int z2 = r2; int y2 = -x2 - z2;
+            int x1 = q1, z1 = r1, y1 = -q1 - r1;
+            int x2 = q2, z2 = r2, y2 = -q2 - r2;
             return (Mathf.Abs(x1 - x2) + Mathf.Abs(y1 - y2) + Mathf.Abs(z1 - z2)) / 2;
         }
 
@@ -321,22 +290,20 @@ namespace Editor
             }
         }
 
-        private Vector3 HexCorner(int cornerIndex, float radius)
+        private Vector3 HexCorner(int index, float radius)
         {
-            float angle_deg = 60f * cornerIndex - 30f;
-            float angle_rad = angle_deg * Mathf.Deg2Rad;
-            float x = radius * Mathf.Cos(angle_rad);
-            float z = radius * Mathf.Sin(angle_rad);
-            return new Vector3(x, 0f, z);
+            float angleDeg = 60f * index - 30f;
+            float angleRad = Mathf.Deg2Rad * angleDeg;
+            return new Vector3(radius * Mathf.Cos(angleRad), 0, radius * Mathf.Sin(angleRad));
         }
 
         private Vector3 GetCameraCenterOnGrid(Camera cam)
         {
-            Ray centerRay = cam.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f));
+            Ray ray = cam.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0));
             Plane plane = new Plane(Vector3.up, Vector3.zero);
-            if (plane.Raycast(centerRay, out float dist))
+            if (plane.Raycast(ray, out float dist))
             {
-                return centerRay.GetPoint(dist);
+                return ray.GetPoint(dist);
             }
             return Vector3.zero;
         }

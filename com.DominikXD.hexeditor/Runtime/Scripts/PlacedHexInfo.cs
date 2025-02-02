@@ -1,8 +1,11 @@
 ﻿using System;
-
 using UnityEngine;
+
 namespace Editor.Runtime
 {
+    /// <summary>
+    /// Serializable class for runtime information about a placed hex tile.
+    /// </summary>
     [Serializable]
     public class PlacedHexInfo
     {
